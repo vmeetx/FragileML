@@ -1,3 +1,5 @@
+Here is the exact, complete README with the YAML fixed. Copy the entire block below and paste it into your `README.md` file. **Do not add `sdk_version` anywhere.** Docker Spaces do not need it, and HF rejects it if it's empty.
+
 ```markdown
 ---
 title: FragileML
