@@ -1,0 +1,35 @@
+name: ml-pipeline-env
+version: 0.1.0
+description: "Simulates fragile ML pipeline debugging with Hugging Face-style failures"
+author: "OpenEnv Contributor"
+license: "MIT"
+
+entrypoint: "src.environment:MLPipelineEnv"
+
+observation_space:
+  type: "pydantic"
+  model: "src.models:Observation"
+
+action_space:
+  type: "pydantic"
+  model: "src.models:Action"
+
+reward_space:
+  type: "pydantic"
+  model: "src.models:Reward"
+  range: [0.0, 1.0]
+
+tasks:
+  - name: "easy"
+    description: "Fix version mismatch to load model"
+    difficulty: 1
+  - name: "medium"
+    description: "Detect and fix silent tokenization failure"
+    difficulty: 2
+  - name: "hard"
+    description: "Identify temporal data leakage and correct split"
+    difficulty: 3
+
+deployment:
+  hf_space: true
+  dockerfile: "Dockerfile"
