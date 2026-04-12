@@ -1,14 +1,7 @@
-<<<<<<< HEAD
 from typing import Dict, Any, List
 from .models import State, Reward, ActionType
 
 STEP_REWARD_CAP = 0.05
-=======
-from typing import Dict, Any
-from .models import State, Reward
-
-STEP_REWARD_CAP = 0.15
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
 
 TASKS = {
     "easy": {
@@ -21,11 +14,7 @@ TASKS = {
             "logs": ["Error: transformers==4.25.0 required, found 4.30.0", "Model load failed"],
             "validation_score": None,
             "test_score": None,
-<<<<<<< HEAD
             "hint": "Fix dependency version mismatch before loading model."
-=======
-            "hint": "Check dependency versions. Fix them, then train."
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
         },
         "ground_truth": {
             "required_deps": {"transformers": "4.25.0", "torch": "1.13.0"},
@@ -49,14 +38,9 @@ TASKS = {
         "ground_truth": {
             "silent_issue": "tokenization_mismatch",
             "expected_val": 0.91,
-<<<<<<< HEAD
             "expected_test_broken": 0.68,
             "expected_test_fixed": 0.79,
             "required_sequence": ["preprocess_data", "evaluate"]
-=======
-            "expected_test": 0.68,      # score BEFORE fix
-            "corrected_test": 0.79      # score AFTER fix
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
         }
     },
     "hard": {
@@ -74,20 +58,14 @@ TASKS = {
         "ground_truth": {
             "leakage_type": "temporal",
             "expected_val_leaked": 0.98,
-<<<<<<< HEAD
             "expected_test_leaked": 0.45,
             "expected_test_fixed": 0.72,
             "required_sequence": ["split_data", "train_model", "evaluate"]
-=======
-            "expected_test_leaked": 0.45,   # score if leakage NOT fixed
-            "expected_test_fixed": 0.72     # score if leakage IS fixed
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
         }
     }
 }
 
 
-<<<<<<< HEAD
 def grade_pipeline(state: State, task_config: Dict, last_action: str = None) -> Reward:
     gt = task_config["ground_truth"]
     task_name = task_config["name"]
@@ -111,38 +89,11 @@ def grade_pipeline(state: State, task_config: Dict, last_action: str = None) -> 
         return Reward(
             total=total,
             pipeline_score=round(micro, 2),
-=======
-def grade_pipeline(state: State, task_config: Dict) -> Reward:
-    gt = task_config["ground_truth"]
-    max_steps = task_config["max_steps"]
-    task_name = task_config["name"]
-
-    # ── Step-wise micro-rewards (strictly capped) ──────────────────────────
-    # These represent observable progress milestones, not the final reward.
-    # They cannot substitute for a genuine confirmed test_score.
-    step_reward = 0.0
-    if state.model_status == "loaded":
-        step_reward += 0.02
-    if state.validation_score is not None:
-        step_reward += 0.03
-    if state.pipeline_valid:
-        step_reward += 0.03
-    step_reward = min(step_reward, STEP_REWARD_CAP)
-
-    # ── No confirmed test_score yet: return only the capped micro-reward ───
-    if state.test_score is None:
-        penalty = 0.05 * max(0, state.consecutive_repeats - 1)
-        total = max(0.0, round(step_reward - penalty, 2))
-        return Reward(
-            total=total,
-            pipeline_score=round(step_reward, 2),
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
             generalization_score=0.0,
             efficiency_score=0.0,
             penalty=round(penalty, 2),
             info="Awaiting confirmed evaluation"
         )
-<<<<<<< HEAD
     
     # ── TEST_SCORE EXISTS: sparse final reward (80% from correctness) ──
     if task_name == "easy":
@@ -181,63 +132,12 @@ def grade_pipeline(state: State, task_config: Dict) -> Reward:
     
     total = min(1.0, max(0.0, gen + efficiency + integrity - penalty))
     
-=======
-
-    # ── From here: test_score exists ───────────────────────────────────────
-
-    # 1. Generalization (70% of total) — primary signal, strictly test_score-based
-    if task_name == "easy":
-        gen = (state.test_score / gt["expected_test"]) * 0.70
-    elif task_name == "medium":
-        target = gt["corrected_test"] if state.pipeline_valid else gt["expected_test"]
-        gen = (state.test_score / target) * 0.70
-    else:  # hard
-        target = (
-            gt["expected_test_fixed"]
-            if state.pipeline_valid
-            else gt["expected_test_leaked"]
-        )
-        gen = (state.test_score / target) * 0.70
-    gen = min(0.70, max(0.0, gen))
-
-    # 2. Efficiency bonus (15%) — rewards completing the task in fewer steps
-    step_ratio = state.step_count / max_steps
-    efficiency = max(0.0, 0.15 * (1.0 - step_ratio))
-
-    # 3. Pipeline integrity bonus (15%) — all required stages completed in order
-    integrity = 0.15 if state.pipeline_valid else 0.0
-
-    # ── Penalties ──────────────────────────────────────────────────────────
-    penalty = 0.0
-
-    # Trivial policy: episode ended in fewer than 3 meaningful steps
-    if state.step_count < 3:
-        penalty += 0.30
-
-    # Premature / invalid evaluation: evaluated without fixing pipeline
-    if not state.pipeline_valid and state.test_score is not None:
-        penalty += 0.20
-
-    # Repeated actions
-    if state.consecutive_repeats >= 2:
-        penalty += 0.05 * state.consecutive_repeats
-
-    # Overfitting signal: large val/test gap without having fixed a known issue
-    if state.validation_score is not None and state.test_score is not None:
-        gap = abs(state.validation_score - state.test_score)
-        if gap > 0.20:
-            penalty += 0.05 * (gap - 0.20)
-
-    total = min(1.0, max(0.0, gen + efficiency + integrity - penalty))
-
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
     return Reward(
         total=round(total, 2),
         pipeline_score=round(integrity, 2),
         generalization_score=round(gen, 2),
         efficiency_score=round(efficiency, 2),
         penalty=round(penalty, 2),
-<<<<<<< HEAD
         info=f"test={state.test_score} | valid={state.pipeline_valid} | seq_ok={sequence_ok}"
     )
 
@@ -270,10 +170,3 @@ def _check_required_sequence(state: State, task_config: Dict) -> bool:
         if req_idx < len(required) and act == required[req_idx]:
             req_idx += 1
     return req_idx == len(required)
-=======
-        info=(
-            f"test={state.test_score} | steps={state.step_count}/{max_steps}"
-            f" | valid={state.pipeline_valid} | task={task_name}"
-        )
-    )
->>>>>>> 7cd7cb628434b7f9838c9ff95925d3d267655bc2
