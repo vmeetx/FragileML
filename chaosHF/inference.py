@@ -17,7 +17,6 @@ MAX_STEPS      = int(os.getenv("MAX_STEPS", "15"))
 
 CONFIRM_STREAK = 2
 
-# Required sequences for each task — used to block premature done
 REQUIRED_SEQUENCES = {
     "easy": ["fix_dependency", "train_model", "evaluate"],
     "medium": ["preprocess_data", "evaluate"],
@@ -95,7 +94,6 @@ def score_is_confirmed(score: float, streak: int, evaluate_seen: bool) -> bool:
 
 
 def _check_required_sequence(task: str, history: List[str]) -> bool:
-    """Check if required actions appear in history in correct order."""
     required = REQUIRED_SEQUENCES.get(task, [])
     if not required:
         return True
@@ -157,6 +155,14 @@ def run_task(task: str) -> dict:
 
             action = parse_action(resp.choices[0].message.content)
 
+            # HARD FIX: block evaluate before train_model
+            if action.action_type == ActionType.EVALUATE and "train_model" not in obs.history:
+                action = Action(
+                    action_type=ActionType.TRAIN_MODEL,
+                    config={},
+                    done=False
+                )
+
             # Hard gate: block done unless confirmed AND sequence complete
             if (action.done or action.action_type == ActionType.DONE) and not (confirmed and seq_ok):
                 action = Action(
@@ -208,4 +214,4 @@ def run_task(task: str) -> dict:
 if __name__ == "__main__":
     results = [run_task(t) for t in ["easy", "medium", "hard"]]
     avg = sum(r["score"] for r in results) / len(results)
-    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr) # aa
+    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr)
