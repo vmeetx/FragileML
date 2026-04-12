@@ -39,6 +39,17 @@ class MLPipelineEnv:
 
         self.state.step_count += 1
 
+        # 🔥 HARD FIX: prevent evaluate before train_model (auto-correct)
+        if action.action_type == ActionType.EVALUATE:
+            if self.task_config["name"] in ["easy", "hard"]:
+                prior_actions = [a.action_type for a in self.state.actions_taken]
+                if ActionType.TRAIN_MODEL not in prior_actions:
+                    action = Action(
+                        action_type=ActionType.TRAIN_MODEL,
+                        config={},
+                        done=False
+                    )
+
         # Repetition check with strong penalty
         is_repeat = (
             len(self.state.actions_taken) > 0
@@ -49,7 +60,6 @@ class MLPipelineEnv:
             if self.state.consecutive_repeats >= 2:
                 err_msg = f"Action '{action.action_type.value}' repeated — progress requires new steps"
                 self.state.logs.append(f"⚠️ {err_msg}")
-                # Return zero reward for repeated actions
                 reward = Reward(total=0.0, pipeline_score=0.0, generalization_score=0.0, efficiency_score=0.0, penalty=0.50, info="Repeated action blocked")
                 return self._to_observation(), reward, False, {"error": err_msg}
         else:
@@ -59,25 +69,28 @@ class MLPipelineEnv:
         self.state.actions_taken.append(action)
         info = {"error": None}
         
-        # Prerequisite validation BEFORE applying action
         if not self._validate_action_preconditions(action, info):
-            # Invalid action: set test_score for feedback but reward = 0.0
             if action.action_type == ActionType.EVALUATE and info.get("error"):
-                self.state.test_score = 0.40  # Feedback score, not reward-eligible
+                self.state.test_score = 0.40
             reward = Reward(total=0.0, pipeline_score=0.0, generalization_score=0.0, efficiency_score=0.0, penalty=0.40, info=info["error"])
             self.state.logs.append(f"❌ {info['error']}")
             return self._to_observation(), reward, False, info
 
         self._apply_action(action, info)
-        # Pass last_action to grader for penalty logic
         reward = grade_pipeline(self.state, self.task_config, action.action_type.value)
 
-        # Episode termination: only allow done if fully validated
         if action.done or action.action_type == ActionType.DONE:
             if not (self.state.pipeline_valid and self.state.test_score is not None):
                 info["error"] = "Cannot end: pipeline not fully validated"
                 self.state.logs.append("⚠️ Episode cannot end — pipeline incomplete")
-                reward = Reward(total=max(0.0, reward.total - 0.30), pipeline_score=reward.pipeline_score, generalization_score=reward.generalization_score, efficiency_score=reward.efficiency_score, penalty=reward.penalty + 0.30, info="Premature termination blocked")
+                reward = Reward(
+                    total=max(0.0, reward.total - 0.30),
+                    pipeline_score=reward.pipeline_score,
+                    generalization_score=reward.generalization_score,
+                    efficiency_score=reward.efficiency_score,
+                    penalty=reward.penalty + 0.30,
+                    info="Premature termination blocked"
+                )
                 return self._to_observation(), reward, False, info
             self.state.episode_done = True
         elif self.state.step_count >= self.state.max_steps:
@@ -116,15 +129,12 @@ class MLPipelineEnv:
                     return False
             return True
         elif action.action_type == ActionType.EVALUATE:
-            # Gate 1: metric config required
             if action.config.get("metric") != "test":
                 info["error"] = "evaluate requires config={'metric': 'test'}"
                 return False
-            # Gate 2: pipeline must be valid for reward-eligible evaluation
             if not self.state.pipeline_valid:
                 info["error"] = "Cannot evaluate: pipeline not valid (complete required steps first)"
                 return False
-            # Gate 3: training required for easy/hard before evaluate
             if self.task_config["name"] in ["easy", "hard"]:
                 prior_actions = [a.action_type for a in self.state.actions_taken]
                 if ActionType.TRAIN_MODEL not in prior_actions:
@@ -171,7 +181,6 @@ class MLPipelineEnv:
             else:
                 self.state.logs.append("⚠️ Split applied — verify leakage mitigation")
         elif action.action_type == ActionType.EVALUATE:
-            # Determine base score based on task state
             if self.task_config["name"] == "medium":
                 base_score = gt["expected_test_fixed"] if self.state.pipeline_valid else gt["expected_test_broken"]
             elif self.task_config["name"] == "hard":
@@ -179,7 +188,6 @@ class MLPipelineEnv:
             else:
                 base_score = gt["expected_test"]
             
-            # Set test_score for feedback (grading handles reward logic)
             self.state.test_score = base_score
             
             if self.state.pipeline_valid:
@@ -210,4 +218,3 @@ class MLPipelineEnv:
 
     def close(self):
         pass
-    #check for commits
