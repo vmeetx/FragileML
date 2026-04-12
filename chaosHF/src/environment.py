@@ -1,3 +1,4 @@
+# src/environment.py 
 from typing import Tuple, Optional, Dict, List, Any
 from .models import Observation, Action, Reward, State, ActionType
 from .tasks import TASKS, grade_pipeline
@@ -36,143 +37,157 @@ class MLPipelineEnv:
         if self.state.episode_done:
             return self._to_observation(), Reward(total=0.0), True, {"error": "Episode complete"}
 
-        # Increment step count always — penalises inefficiency
         self.state.step_count += 1
 
-        # ── Repetition check ───────────────────────────────────────────────
+        # Repetition check with strong penalty
         is_repeat = (
             len(self.state.actions_taken) > 0
             and self.state.actions_taken[-1].action_type == action.action_type
         )
-
         if is_repeat:
             self.state.consecutive_repeats += 1
-            err_msg = f"Repeated action '{action.action_type.value}'. Progress requires new steps."
-            self.state.logs.append(f"⚠️ Warning: {err_msg}")
-            info = {"error": err_msg}
-            reward = grade_pipeline(self.state, self.task_config)
-            reward.penalty += 0.15
-            reward.total = max(0.0, round(reward.total - 0.15, 2))
-            return self._to_observation(), reward, False, info
-
-        self.state.consecutive_repeats = 0
+            if self.state.consecutive_repeats >= 2:
+                err_msg = f"Action '{action.action_type.value}' repeated — progress requires new steps"
+                self.state.logs.append(f"⚠️ {err_msg}")
+                # Return zero reward for repeated actions
+                reward = Reward(total=0.0, pipeline_score=0.0, generalization_score=0.0, efficiency_score=0.0, penalty=0.50, info="Repeated action blocked")
+                return self._to_observation(), reward, False, {"error": err_msg}
+        else:
+            self.state.consecutive_repeats = 0
+        
         self.state.last_action_type = action.action_type.value
         self.state.actions_taken.append(action)
-
         info = {"error": None}
-        self._apply_action(action, info)
-        reward = grade_pipeline(self.state, self.task_config)
+        
+        # Prerequisite validation BEFORE applying action
+        if not self._validate_action_preconditions(action, info):
+            # Invalid action: set test_score for feedback but reward = 0.0
+            if action.action_type == ActionType.EVALUATE and info.get("error"):
+                self.state.test_score = 0.40  # Feedback score, not reward-eligible
+            reward = Reward(total=0.0, pipeline_score=0.0, generalization_score=0.0, efficiency_score=0.0, penalty=0.40, info=info["error"])
+            self.state.logs.append(f"❌ {info['error']}")
+            return self._to_observation(), reward, False, info
 
-        if (
-            action.done
-            or action.action_type == ActionType.DONE
-            or self.state.step_count >= self.state.max_steps
-        ):
+        self._apply_action(action, info)
+        # Pass last_action to grader for penalty logic
+        reward = grade_pipeline(self.state, self.task_config, action.action_type.value)
+
+        # Episode termination: only allow done if fully validated
+        if action.done or action.action_type == ActionType.DONE:
+            if not (self.state.pipeline_valid and self.state.test_score is not None):
+                info["error"] = "Cannot end: pipeline not fully validated"
+                self.state.logs.append("⚠️ Episode cannot end — pipeline incomplete")
+                reward = Reward(total=max(0.0, reward.total - 0.30), pipeline_score=reward.pipeline_score, generalization_score=reward.generalization_score, efficiency_score=reward.efficiency_score, penalty=reward.penalty + 0.30, info="Premature termination blocked")
+                return self._to_observation(), reward, False, info
+            self.state.episode_done = True
+        elif self.state.step_count >= self.state.max_steps:
             self.state.episode_done = True
 
         return self._to_observation(), reward, self.state.episode_done, info
 
+    def _validate_action_preconditions(self, action: Action, info: Dict[str, Any]) -> bool:
+        gt = self.task_config["ground_truth"]
+        if action.action_type == ActionType.FIX_DEPENDENCY:
+            if "transformers" not in str(action.config) and action.config.get("package") != "transformers":
+                info["error"] = "fix_dependency requires transformers package configuration"
+                return False
+            return True
+        elif action.action_type == ActionType.LOAD_MODEL:
+            req_ver = gt.get("required_deps", {}).get("transformers")
+            if req_ver and self.state.model_params.get("version") != req_ver:
+                info["error"] = f"Cannot load: transformers version must be {req_ver}"
+                return False
+            return True
+        elif action.action_type == ActionType.TRAIN_MODEL:
+            if self.state.model_status != "loaded":
+                info["error"] = "Cannot train: model not loaded (resolve dependencies first)"
+                return False
+            return True
+        elif action.action_type == ActionType.PREPROCESS_DATA:
+            if self.task_config["name"] == "medium":
+                if "tokenization" not in str(action.config):
+                    info["error"] = "preprocess_data requires tokenization fix for this task"
+                    return False
+            return True
+        elif action.action_type == ActionType.SPLIT_DATA:
+            if self.task_config["name"] == "hard":
+                if action.config.get("method") != "time_series":
+                    info["error"] = "split_data requires method='time_series' to address leakage"
+                    return False
+            return True
+        elif action.action_type == ActionType.EVALUATE:
+            # Gate 1: metric config required
+            if action.config.get("metric") != "test":
+                info["error"] = "evaluate requires config={'metric': 'test'}"
+                return False
+            # Gate 2: pipeline must be valid for reward-eligible evaluation
+            if not self.state.pipeline_valid:
+                info["error"] = "Cannot evaluate: pipeline not valid (complete required steps first)"
+                return False
+            # Gate 3: training required for easy/hard before evaluate
+            if self.task_config["name"] in ["easy", "hard"]:
+                prior_actions = [a.action_type for a in self.state.actions_taken]
+                if ActionType.TRAIN_MODEL not in prior_actions:
+                    info["error"] = "Cannot evaluate: train_model required before evaluation"
+                    return False
+            return True
+        elif action.action_type == ActionType.DONE:
+            if not (self.state.pipeline_valid and self.state.test_score is not None):
+                info["error"] = "Cannot end: pipeline not fully validated"
+                return False
+            return True
+        return True
+
     def _apply_action(self, action: Action, info: Dict[str, Any]):
         gt = self.task_config["ground_truth"]
         cfg = action.config
-
+        
         if action.action_type == ActionType.FIX_DEPENDENCY:
-            if "transformers" in cfg or cfg.get("package", "").lower() == "transformers":
-                self.state.model_params["version"] = gt["required_deps"].get("transformers", "4.25.0")
-                self.state.model_status = "loaded"
-                self.state.logs = [l for l in self.state.logs if "Error:" not in l]
-                self.state.logs.append("✅ Dependency fixed. Next: train_model.")
-            else:
-                info["error"] = "Invalid dependency config"
-
+            self.state.model_params["version"] = gt["required_deps"].get("transformers", "4.25.0")
+            self.state.model_status = "loaded"
+            self.state.logs = [l for l in self.state.logs if "Error:" not in l and "failed" not in l.lower()]
+            self.state.logs.append("✅ Dependency issue resolved — model should now load correctly")
         elif action.action_type == ActionType.LOAD_MODEL:
-            req_ver = gt.get("required_deps", {}).get("transformers")
-            if req_ver and self.state.model_params.get("version") == req_ver:
-                self.state.model_status = "loaded"
-                self.state.logs.append("✅ Model loaded successfully.")
-            else:
-                self.state.model_status = "failed"
-                self.state.logs.append("❌ Load failed: version mismatch")
-                info["error"] = "Version mismatch"
-
+            self.state.model_status = "loaded"
+            self.state.logs.append("✅ Model loaded successfully — weights initialized")
+        elif action.action_type == ActionType.TRAIN_MODEL:
+            self.state.logs.append("✅ Training completed — validation metrics updated")
+            if self.state.validation_score is None:
+                self.state.validation_score = gt["expected_val"]
+            if self.task_config["name"] == "easy":
+                self.state.pipeline_valid = True
         elif action.action_type == ActionType.PREPROCESS_DATA:
-            if self.task_config["name"] == "medium" and "tokenization" in str(action.config):
-                self.state.logs.append("✅ Tokenization aligned. Pipeline valid.")
+            if self.task_config["name"] == "medium" and "tokenization" in str(cfg):
+                self.state.logs.append("✅ Data preprocessing applied — tokenization aligned")
                 self.state.pipeline_valid = True
             else:
-                self.state.logs.append("❌ Invalid preprocess config for this task.")
-                info["error"] = "Invalid preprocess config"
-
+                self.state.logs.append("⚠️ Preprocessing applied — verify tokenization alignment")
         elif action.action_type == ActionType.SPLIT_DATA:
-            if self.task_config["name"] == "hard" and action.config.get("method") == "time_series":
+            if self.task_config["name"] == "hard" and cfg.get("method") == "time_series":
                 self.state.leakage_detected = False
                 self.state.dataset_config["leakage_fixed"] = True
-                self.state.logs.append("✅ Temporal split applied. Leakage removed.")
+                self.state.logs.append("✅ Data split applied — temporal ordering preserved")
                 self.state.pipeline_valid = True
             else:
-                self.state.logs.append("❌ Invalid split config for this task.")
-                info["error"] = "Invalid split config"
-
-        elif action.action_type == ActionType.TRAIN_MODEL:
-            if self.state.model_status == "loaded":
-                self.state.logs.append("✅ Training completed.")
-                if not self.state.validation_score:
-                    self.state.validation_score = gt["expected_val"]
-                if self.task_config["name"] == "easy":
-                    self.state.pipeline_valid = True
-            else:
-                self.state.logs.append("❌ Cannot train: model not loaded")
-                info["error"] = "Model not loaded"
-
+                self.state.logs.append("⚠️ Split applied — verify leakage mitigation")
         elif action.action_type == ActionType.EVALUATE:
-            # ── Prerequisite gate 1: metric config ────────────────────────
-            if cfg.get("metric") != "test":
-                self.state.logs.append("❌ Evaluate requires config={'metric': 'test'}")
-                info["error"] = "Missing metric config"
-                return
-
-            # ── Prerequisite gate 2: training must have been completed ─────
-            # Check all actions taken BEFORE this one (current action already appended)
-            prior_actions = self.state.actions_taken[:-1]
-            trained = any(
-                a.action_type == ActionType.TRAIN_MODEL for a in prior_actions
-            )
-            # Medium task starts pre-trained; treat existing validation_score as evidence
-            task_pre_trained = (
-                self.task_config["name"] == "medium"
-                and self.state.validation_score is not None
-            )
-
-            if not trained and not task_pre_trained:
-                # Hard gate: assign a penalised score but do not mark pipeline valid
-                self.state.test_score = 0.40
-                self.state.logs.append(
-                    "❌ Premature evaluation — no training completed. Score penalised."
-                )
-                info["error"] = "Premature evaluation: train_model required first"
-                return
-
-            # ── Prerequisite gate 3: pipeline must be valid ────────────────
-            if not self.state.pipeline_valid:
-                self.state.test_score = 0.50
-                self.state.logs.append(
-                    "❌ Evaluation before pipeline fix. Score penalised."
-                )
-                info["error"] = "Pipeline not valid: fix required steps first"
-                return
-
-            # ── Valid evaluation ───────────────────────────────────────────
+            # Determine base score based on task state
             if self.task_config["name"] == "medium":
-                self.state.test_score = gt.get("corrected_test", 0.79)
+                base_score = gt["expected_test_fixed"] if self.state.pipeline_valid else gt["expected_test_broken"]
             elif self.task_config["name"] == "hard":
-                self.state.test_score = gt.get("expected_test_fixed", 0.72)
+                base_score = gt["expected_test_fixed"] if (self.state.pipeline_valid and not self.state.leakage_detected) else gt["expected_test_leaked"]
             else:
-                self.state.test_score = gt.get("expected_test", 0.82)
-
-            self.state.logs.append(f"✅ Evaluation success: test_score={self.state.test_score}")
-
+                base_score = gt["expected_test"]
+            
+            # Set test_score for feedback (grading handles reward logic)
+            self.state.test_score = base_score
+            
+            if self.state.pipeline_valid:
+                self.state.logs.append(f"✅ Evaluation complete — test_score={self.state.test_score}")
+            else:
+                self.state.logs.append(f"⚠️ Evaluation completed — note: metrics may reflect unresolved issues (score={self.state.test_score})")
         elif action.action_type == ActionType.INSPECT_LOGS:
-            self.state.logs.append("🔍 Logs inspected.")
+            self.state.logs.append("🔍 Log review complete — error patterns identified")
 
     def _to_observation(self) -> Observation:
         return Observation(
@@ -190,5 +205,9 @@ class MLPipelineEnv:
             steps_remaining=self.state.max_steps - self.state.step_count,
         )
 
+    def state(self) -> State:
+        return self.state
+
     def close(self):
         pass
+    #check for commits
