@@ -9,9 +9,9 @@ from openai import OpenAI
 from src.environment import MLPipelineEnv
 from src.models import Action, ActionType, Observation
 
-API_BASE_URL   = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME     = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
-HF_TOKEN       = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL   = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME     = os.getenv("MODEL_NAME", "deepseek/deepseek-chat")
+API_KEY        = os.getenv("OPENROUTER_API_KEY") or os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 BENCHMARK      = os.getenv("BENCHMARK", "ml-pipeline-env")
 MAX_STEPS      = int(os.getenv("MAX_STEPS", "15"))
 
@@ -109,7 +109,7 @@ def _check_required_sequence(task: str, history: List[str]) -> bool:
 
 def run_task(task: str) -> dict:
     env = MLPipelineEnv(task_name=task)
-    client = OpenAI(api_key=HF_TOKEN or "dummy", base_url=API_BASE_URL)
+    client = OpenAI(api_key=API_KEY or "dummy", base_url=API_BASE_URL)
     obs = env.reset()
 
     rewards: List[float] = []
@@ -153,7 +153,6 @@ def run_task(task: str) -> dict:
                 ],
                 temperature=0.0,
                 max_tokens=150,
-                response_format={"type": "json_object"}
             )
 
             action = parse_action(resp.choices[0].message.content)
