@@ -1,4 +1,3 @@
-# inference.py — SURGICAL FIX: Block done unless required steps completed
 import os
 import sys
 import json
@@ -210,4 +209,4 @@ def run_task(task: str) -> dict:
 if __name__ == "__main__":
     results = [run_task(t) for t in ["easy", "medium", "hard"]]
     avg = sum(r["score"] for r in results) / len(results)
-    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr)
+    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr) # aa
