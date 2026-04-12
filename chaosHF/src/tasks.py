@@ -1,8 +1,8 @@
 from typing import Dict, Any
 from .models import State, Reward
 
-# ✅ FIX: Removed all trailing spaces from keys and values. 
-# ✅ FIX: Used simple names ("easy", "medium", "hard") for robust logic matching.
+STEP_REWARD_CAP = 0.15
+
 TASKS = {
     "easy": {
         "name": "easy",
@@ -37,8 +37,8 @@ TASKS = {
         "ground_truth": {
             "silent_issue": "tokenization_mismatch",
             "expected_val": 0.91,
-            "expected_test": 0.68, # The score BEFORE fix
-            "corrected_test": 0.79 # The score AFTER fix
+            "expected_test": 0.68,      # score BEFORE fix
+            "corrected_test": 0.79      # score AFTER fix
         }
     },
     "hard": {
@@ -56,59 +56,98 @@ TASKS = {
         "ground_truth": {
             "leakage_type": "temporal",
             "expected_val_leaked": 0.98,
-            "expected_test_leaked": 0.45, # Score if leakage NOT fixed
-            "expected_test_fixed": 0.72   # Score if leakage IS fixed
+            "expected_test_leaked": 0.45,   # score if leakage NOT fixed
+            "expected_test_fixed": 0.72     # score if leakage IS fixed
         }
     }
 }
 
+
 def grade_pipeline(state: State, task_config: Dict) -> Reward:
-    pipeline = 0.0
-    generalization = 0.0
-    efficiency = 0.0
-    penalty = 0.0
     gt = task_config["ground_truth"]
     max_steps = task_config["max_steps"]
     task_name = task_config["name"]
 
-    # 1. Milestones
-    if state.model_status == "loaded": pipeline += 0.15
-    if state.validation_score is not None: pipeline += 0.15
-    if state.pipeline_valid: pipeline += 0.15
-    if state.test_score is not None: pipeline += 0.20
+    # ── Step-wise micro-rewards (strictly capped) ──────────────────────────
+    # These represent observable progress milestones, not the final reward.
+    # They cannot substitute for a genuine confirmed test_score.
+    step_reward = 0.0
+    if state.model_status == "loaded":
+        step_reward += 0.02
+    if state.validation_score is not None:
+        step_reward += 0.03
+    if state.pipeline_valid:
+        step_reward += 0.03
+    step_reward = min(step_reward, STEP_REWARD_CAP)
 
-    # 2. Generalization
-    if state.test_score is not None:
-        if task_name == "easy":
-            generalization = max(0, min(1, state.test_score / gt["expected_test"])) * 0.20
-        elif task_name == "medium":
-            target = gt["corrected_test"] if state.pipeline_valid else gt["expected_test"]
-            generalization = max(0, min(1, state.test_score / target)) * 0.20
-        else:  # hard
-            target = gt.get("expected_test_fixed", 0.72) if state.pipeline_valid else gt.get("expected_test_leaked", 0.45)
-            if state.pipeline_valid and state.test_score >= target:
-                generalization = 0.30
-            elif state.test_score >= gt["expected_test_leaked"]:
-                generalization = 0.10
+    # ── No confirmed test_score yet: return only the capped micro-reward ───
+    if state.test_score is None:
+        penalty = 0.05 * max(0, state.consecutive_repeats - 1)
+        total = max(0.0, round(step_reward - penalty, 2))
+        return Reward(
+            total=total,
+            pipeline_score=round(step_reward, 2),
+            generalization_score=0.0,
+            efficiency_score=0.0,
+            penalty=round(penalty, 2),
+            info="Awaiting confirmed evaluation"
+        )
 
-    # 3. Efficiency
+    # ── From here: test_score exists ───────────────────────────────────────
+
+    # 1. Generalization (70% of total) — primary signal, strictly test_score-based
+    if task_name == "easy":
+        gen = (state.test_score / gt["expected_test"]) * 0.70
+    elif task_name == "medium":
+        target = gt["corrected_test"] if state.pipeline_valid else gt["expected_test"]
+        gen = (state.test_score / target) * 0.70
+    else:  # hard
+        target = (
+            gt["expected_test_fixed"]
+            if state.pipeline_valid
+            else gt["expected_test_leaked"]
+        )
+        gen = (state.test_score / target) * 0.70
+    gen = min(0.70, max(0.0, gen))
+
+    # 2. Efficiency bonus (15%) — rewards completing the task in fewer steps
     step_ratio = state.step_count / max_steps
-    efficiency = max(0.0, 0.15 - (step_ratio * 0.1))
+    efficiency = max(0.0, 0.15 * (1.0 - step_ratio))
 
-    # 4. Penalties
-    if state.consecutive_repeats >= 2: penalty += 0.05 * state.consecutive_repeats
-    if state.test_score is not None and not state.pipeline_valid: penalty += 0.20
-    if state.validation_score and state.test_score:
+    # 3. Pipeline integrity bonus (15%) — all required stages completed in order
+    integrity = 0.15 if state.pipeline_valid else 0.0
+
+    # ── Penalties ──────────────────────────────────────────────────────────
+    penalty = 0.0
+
+    # Trivial policy: episode ended in fewer than 3 meaningful steps
+    if state.step_count < 3:
+        penalty += 0.30
+
+    # Premature / invalid evaluation: evaluated without fixing pipeline
+    if not state.pipeline_valid and state.test_score is not None:
+        penalty += 0.20
+
+    # Repeated actions
+    if state.consecutive_repeats >= 2:
+        penalty += 0.05 * state.consecutive_repeats
+
+    # Overfitting signal: large val/test gap without having fixed a known issue
+    if state.validation_score is not None and state.test_score is not None:
         gap = abs(state.validation_score - state.test_score)
-        if gap > 0.2: penalty += 0.05 * (gap - 0.2)
+        if gap > 0.20:
+            penalty += 0.05 * (gap - 0.20)
 
-    total = min(1.0, max(0.0, pipeline + generalization + efficiency - penalty))
+    total = min(1.0, max(0.0, gen + efficiency + integrity - penalty))
 
     return Reward(
         total=round(total, 2),
-        pipeline_score=round(pipeline, 2),
-        generalization_score=round(generalization, 2),
+        pipeline_score=round(integrity, 2),
+        generalization_score=round(gen, 2),
         efficiency_score=round(efficiency, 2),
         penalty=round(penalty, 2),
-        info=f"Stage: {state.model_status} | Val: {state.validation_score} | Test: {state.test_score}"
+        info=(
+            f"test={state.test_score} | steps={state.step_count}/{max_steps}"
+            f" | valid={state.pipeline_valid} | task={task_name}"
+        )
     )
