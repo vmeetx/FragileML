@@ -215,4 +215,3 @@ if __name__ == "__main__":
     results = [run_task(t) for t in ["easy", "medium", "hard"]]
     avg = sum(r["score"] for r in results) / len(results)
     print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr)
-    
