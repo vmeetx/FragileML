@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
-# ✅ FIX: Removed all trailing spaces from enum values
+
 class ActionType(str, Enum):
     LOAD_MODEL = "load_model"
     FIX_DEPENDENCY = "fix_dependency"
@@ -14,10 +14,12 @@ class ActionType(str, Enum):
     VALIDATE_DATA = "validate_data"
     DONE = "done"
 
+
 class Action(BaseModel):
     action_type: ActionType
     config: Dict[str, Any] = Field(default_factory=dict)
     done: bool = False
+
 
 class Observation(BaseModel):
     dataset_summary: Dict[str, Any] = Field(default_factory=dict)
@@ -33,6 +35,7 @@ class Observation(BaseModel):
     leakage_detected: bool = False
     steps_remaining: int = 0
 
+
 class Reward(BaseModel):
     total: float = Field(..., ge=0.0, le=1.0)
     pipeline_score: float = 0.0
@@ -40,6 +43,7 @@ class Reward(BaseModel):
     efficiency_score: float = 0.0
     penalty: float = 0.0
     info: str = ""
+
 
 class State(BaseModel):
     task_name: str
