@@ -12,3 +12,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=2s --retries=2 \
   CMD python -c "from src.environment import MLPipelineEnv; MLPipelineEnv().reset(); print('READY')" || exit 1
 
 CMD sh -c "python inference.py; tail -f /dev/null"
+#checking if it updated
