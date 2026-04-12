@@ -9,15 +9,14 @@ from openai import OpenAI
 from src.environment import MLPipelineEnv
 from src.models import Action, ActionType, Observation
 
-API_BASE_URL   = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME     = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
-HF_TOKEN       = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL   = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME     = os.getenv("MODEL_NAME", "deepseek/deepseek-chat")
+API_KEY        = os.getenv("OPENROUTER_API_KEY") or os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 BENCHMARK      = os.getenv("BENCHMARK", "ml-pipeline-env")
 MAX_STEPS      = int(os.getenv("MAX_STEPS", "15"))
 
 CONFIRM_STREAK = 2
 
-# Required sequences for each task — used to block premature done
 REQUIRED_SEQUENCES = {
     "easy": ["fix_dependency", "train_model", "evaluate"],
     "medium": ["preprocess_data", "evaluate"],
@@ -95,7 +94,6 @@ def score_is_confirmed(score: float, streak: int, evaluate_seen: bool) -> bool:
 
 
 def _check_required_sequence(task: str, history: List[str]) -> bool:
-    """Check if required actions appear in history in correct order."""
     required = REQUIRED_SEQUENCES.get(task, [])
     if not required:
         return True
@@ -109,7 +107,7 @@ def _check_required_sequence(task: str, history: List[str]) -> bool:
 
 def run_task(task: str) -> dict:
     env = MLPipelineEnv(task_name=task)
-    client = OpenAI(api_key=HF_TOKEN or "dummy", base_url=API_BASE_URL)
+    client = OpenAI(api_key=API_KEY or "dummy", base_url=API_BASE_URL)
     obs = env.reset()
 
     rewards: List[float] = []
@@ -153,10 +151,17 @@ def run_task(task: str) -> dict:
                 ],
                 temperature=0.0,
                 max_tokens=150,
-                response_format={"type": "json_object"}
             )
 
             action = parse_action(resp.choices[0].message.content)
+
+            # HARD FIX: block evaluate before train_model
+            if action.action_type == ActionType.EVALUATE and "train_model" not in obs.history:
+                action = Action(
+                    action_type=ActionType.TRAIN_MODEL,
+                    config={},
+                    done=False
+                )
 
             # Hard gate: block done unless confirmed AND sequence complete
             if (action.done or action.action_type == ActionType.DONE) and not (confirmed and seq_ok):
@@ -209,4 +214,5 @@ def run_task(task: str) -> dict:
 if __name__ == "__main__":
     results = [run_task(t) for t in ["easy", "medium", "hard"]]
     avg = sum(r["score"] for r in results) / len(results)
-    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr) # aa
+    print(f"\n# Baseline: avg={avg:.2f}", file=sys.stderr)
+    
